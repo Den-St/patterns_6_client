@@ -1,22 +1,27 @@
-import { useState } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { api } from "../api.js";
+import { debounce } from "../utils/debounce.js";
+import { throttle } from "../utils/throttle.js";
 
 /**
  * Reusable user search component for admin & super admin pages.
+ * - Uses DEBOUNCE for live search-as-you-type (300ms delay)
+ * - Uses THROTTLE to limit how often window resize info updates (500ms)
  */
 export default function UserSearch() {
   const [query, setQuery] = useState("");
   const [users, setUsers] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
 
-  const handleSearch = async (e) => {
-    e.preventDefault();
+  // --- Debounced live search ---
+  const performSearch = async (searchQuery) => {
     setError(null);
     setLoading(true);
     try {
-      const results = query.trim()
-        ? await api.searchUsers(query.trim())
+      const results = searchQuery
+        ? await api.searchUsers(searchQuery)
         : await api.getAllUsers();
       setUsers(results);
     } catch (err) {
@@ -27,15 +32,55 @@ export default function UserSearch() {
     }
   };
 
+  // Debounce the search: waits 300ms after user stops typing
+  const debouncedSearch = useRef(
+    debounce((value) => performSearch(value), 300)
+  ).current;
+
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => debouncedSearch.cancel();
+  }, [debouncedSearch]);
+
+  const handleInputChange = (e) => {
+    const value = e.target.value;
+    setQuery(value);
+    debouncedSearch(value.trim());
+  };
+
+  // Manual submit still works immediately
+  const handleSearch = async (e) => {
+    e.preventDefault();
+    debouncedSearch.cancel();
+    performSearch(query.trim());
+  };
+
+  // --- Throttled window resize tracking ---
+  useEffect(() => {
+    const throttledResize = throttle(() => {
+      setWindowWidth(window.innerWidth);
+      console.log(`[THROTTLE] Window resized: ${window.innerWidth}px`);
+    }, 500);
+
+    window.addEventListener("resize", throttledResize);
+    return () => {
+      window.removeEventListener("resize", throttledResize);
+      throttledResize.cancel();
+    };
+  }, []);
+
   return (
     <section className="card">
       <h2>Search Users</h2>
+      <p className="muted" style={{ fontSize: "0.8rem" }}>
+        Window width (throttled): {windowWidth}px • Live search (debounced 300ms)
+      </p>
       <form className="search-bar" onSubmit={handleSearch}>
         <input
           type="text"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search by nickname (empty = all)"
+          onChange={handleInputChange}
+          placeholder="Type to search by nickname (debounced)"
         />
         <button type="submit" disabled={loading}>
           {loading ? "Searching..." : "Search"}
